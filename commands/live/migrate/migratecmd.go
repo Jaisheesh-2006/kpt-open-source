@@ -377,8 +377,14 @@ func (mr *Runner) migrateKptfileToRG(args []string) error {
 		}
 
 		if _, err := kptfileutil.ValidateInventory(kf.Inventory); err != nil {
-			// Kptfile does not contain inventory: migration is not needed.
-			return nil
+			// Kptfile does not contain valid inventory: migration is not needed
+			// if inventory is nil, but is an error if inventory exists with
+			// missing fields.
+			if kf.Inventory == nil {
+				return nil
+			}
+			return errors.E(op, types.UniquePath(dir),
+				fmt.Errorf("inventory in Kptfile is incomplete and cannot be migrated: %w", err))
 		}
 
 		// Make sure resourcegroup file does not exist.
@@ -386,8 +392,8 @@ func (mr *Runner) migrateKptfileToRG(args []string) error {
 		switch {
 		case rgFileErr == nil:
 			return errors.E(op, errors.IO, types.UniquePath(dir), "the resourcegroup file already exists and inventory information cannot be migrated")
-		case err != nil && !goerrors.Is(err, os.ErrNotExist):
-			return errors.E(op, errors.IO, types.UniquePath(dir), err)
+		case rgFileErr != nil && !goerrors.Is(rgFileErr, os.ErrNotExist):
+			return errors.E(op, errors.IO, types.UniquePath(dir), rgFileErr)
 		}
 
 		err = (&initialization.ConfigureInventoryInfo{

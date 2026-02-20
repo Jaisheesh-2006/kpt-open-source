@@ -482,16 +482,18 @@ function assertRGInventory {
     echo "kubectl get resourcegroups.kpt.dev -n $ns --selector='cli-utils.sigs.k8s.io/inventory-id' --no-headers | awk '{print $1}'"
     kubectl get resourcegroups.kpt.dev -n $ns --selector='cli-utils.sigs.k8s.io/inventory-id' --no-headers | awk '{print $1}' > $OUTPUT_DIR/invname
 
-    test 1 == $(grep "inventory-" $OUTPUT_DIR/invname | wc -l);
-    if [ $? == 0 ]; then
+    local count
+    count=$(grep -c "inventory-" $OUTPUT_DIR/invname || true)
+    if [ "$count" -eq 1 ]; then
 	echo -n '.'
     else
 	echo -n 'E'
 	if [ ! -f $OUTPUT_DIR/errors ]; then
 	    touch $OUTPUT_DIR/errors
 	fi
-	echo "error: expected missing ResourceGroup inventory in ${ns} namespace" >> $OUTPUT_DIR/errors
-    HAS_TEST_FAILURE=1
+	echo "error: expected exactly 1 ResourceGroup inventory in ${ns} namespace, found ${count}:" >> $OUTPUT_DIR/errors
+	cat $OUTPUT_DIR/invname >> $OUTPUT_DIR/errors
+	HAS_TEST_FAILURE=1
     fi
 }
 

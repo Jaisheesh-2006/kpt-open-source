@@ -21,9 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/kptdev/kpt/internal/docs/generated/livedocs"
 	"github.com/kptdev/kpt/internal/pkg"
@@ -36,6 +34,7 @@ import (
 	"github.com/kptdev/kpt/pkg/lib/types"
 	"github.com/kptdev/kpt/pkg/printer"
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	k8scmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"sigs.k8s.io/cli-utils/pkg/common"
@@ -195,13 +194,33 @@ func (c *ConfigureInventoryInfo) Run(ctx context.Context) error {
 
 	// Autogenerate the name if it is not provided through the flag.
 	if c.Name == "" {
-		randomSuffix := common.RandomStr()
-		c.Name = fmt.Sprintf("%s-%s", defaultInventoryName, randomSuffix)
+		// If an explicit inventory ID was provided but no name, derive from the directory.
+		if c.InventoryID != "" {
+			dirName := filepath.Base(c.Pkg.UniquePath.String())
+			if errs := validation.IsDNS1123Label(dirName); len(errs) > 0 {
+				return errors.E(op, c.Pkg.UniquePath,
+					fmt.Errorf("directory name %q is not a valid Kubernetes resource name and --name was not provided: %s",
+						dirName, strings.Join(errs, "; ")))
+			}
+			c.Name = dirName
+		} else {
+			randomSuffix := common.RandomStr()
+			c.Name = fmt.Sprintf("%s-%s", defaultInventoryName, randomSuffix)
+		}
+	} else {
+		// Validate explicitly provided name against DNS label rules.
+		trimmed := strings.TrimSpace(c.Name)
+		if errs := validation.IsDNS1123Label(trimmed); len(errs) > 0 {
+			return errors.E(op, c.Pkg.UniquePath,
+				fmt.Errorf("--name %q is not a valid Kubernetes resource name: %s",
+					trimmed, strings.Join(errs, "; ")))
+		}
+		c.Name = trimmed
 	}
 
 	// Autogenerate the inventory ID if not provided through the flag.
 	if c.InventoryID == "" {
-		c.InventoryID, err = generateID(namespace, c.Name, time.Now())
+		c.InventoryID, err = generateHash(namespace, c.Name)
 		if err != nil {
 			return errors.E(op, c.Pkg.UniquePath, err)
 		}
@@ -302,20 +321,7 @@ func writeRGFile(dir string, rg *rgfilev1alpha1.ResourceGroup, filename string) 
 	return nil
 }
 
-// generateID returns the string which is a SHA1 hash of the passed namespace
-// and name, with the unix timestamp string concatenated. Returns an error
-// if either the namespace or name are empty.
-func generateID(namespace string, name string, t time.Time) (string, error) {
-	const op errors.Op = "cmdliveinit.generateID"
-	hashStr, err := generateHash(namespace, name)
-	if err != nil {
-		return "", errors.E(op, err)
-	}
-	timeStr := strconv.FormatInt(t.UTC().UnixNano(), 10)
-	return fmt.Sprintf("%s-%s", hashStr, timeStr), nil
-}
-
-// generateHash returns the SHA1 hash of the concatenated "namespace:name" string,
+// generateHash returns a deterministic SHA-1 hex digest of "namespace:name".
 // or an error if either namespace or name is empty.
 func generateHash(namespace string, name string) (string, error) {
 	const op errors.Op = "cmdliveinit.generateHash"
@@ -323,10 +329,9 @@ func generateHash(namespace string, name string) (string, error) {
 		return "", errors.E(op,
 			fmt.Errorf("can not generate hash with empty namespace or name"))
 	}
-	str := fmt.Sprintf("%s:%s", namespace, name)
 	h := sha1.New()
-	if _, err := h.Write([]byte(str)); err != nil {
-		return "", errors.E(op, err)
+	if _, err := fmt.Fprintf(h, "%s:%s", namespace, name); err != nil {
+		return "", fmt.Errorf("failed to write hash input: %w", err)
 	}
 	return fmt.Sprintf("%x", (h.Sum(nil))), nil
 }
